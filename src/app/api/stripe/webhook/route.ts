@@ -1,29 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server'
-
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.text()
-    const sig = req.headers.get('stripe-signature') || ''
-
-    // For MVP: log webhooks
-    const event = JSON.parse(body)
-    console.log('Stripe webhook:', event.type)
-
-    switch (event.type) {
-      case 'checkout.session.completed':
-        console.log('Payment succeeded for session:', event.data.object.id)
-        break
-      case 'customer.subscription.updated':
-        console.log('Subscription updated:', event.data.object.id)
-        break
-      case 'customer.subscription.deleted':
-        console.log('Subscription cancelled:', event.data.object.id)
-        break
-    }
-
-    return NextResponse.json({ received: true })
-  } catch (error) {
-    console.error('Webhook error:', error)
-    return NextResponse.json({ error: 'Webhook error' }, { status: 400 })
-  }
+import Stripe from 'stripe'
+export async function POST(req:Request){
+ const key=process.env.STRIPE_SECRET_KEY,secret=process.env.STRIPE_WEBHOOK_SECRET
+ if(!key||!secret)return Response.json({error:'Stripe webhook not configured'},{status:503})
+ try{
+  // Never trust unsigned subscription events. This endpoint does not grant social allowance.
+  const stripe=new Stripe(key)
+  const event=stripe.webhooks.constructEvent(await req.text(),req.headers.get('stripe-signature')||'',secret)
+  return Response.json({received:true,type:event.type,entitlements_updated:false})
+ }catch{return Response.json({error:'Invalid webhook signature'},{status:400})}
 }

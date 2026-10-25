@@ -34,3 +34,7 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Flologix Social
+
+Open `/social` for the social MVP. Follow [the setup and integration status guide](docs/SOCIAL_SETUP.md) before enabling live publishing. Apply the Supabase migration, configure private storage and Auth, then start the app and worker. Tests use embedded PostgreSQL and mocked provider responses; production accounts and credentials are not bundled.
