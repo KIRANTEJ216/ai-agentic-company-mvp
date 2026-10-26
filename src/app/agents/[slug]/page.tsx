@@ -25,9 +25,7 @@ export default function AgentChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [sessionId] = useState(uuidv4())
   const scrollRef = useRef<HTMLDivElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -83,7 +81,7 @@ export default function AgentChatPage() {
           return updated
         })
       }
-    } catch (err: any) {
+    } catch {
       setMessages(prev => {
         const updated = [...prev]
         const last = updated[updated.length - 1]

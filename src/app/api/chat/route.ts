@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
 
     const apiMessages = [
       { role: 'system', content: agent.system_prompt },
-      ...(conversationHistory?.slice(-20) || []).map((m: any) => ({
+      ...(conversationHistory?.slice(-20) || []).map((m: {role: string; content: string}) => ({
         role: m.role,
         content: m.content,
       })),

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
+import { Card, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { agents, divisions } from '@/data/agents'
@@ -12,13 +12,13 @@ export default function AgentsPage() {
   const [search, setSearch] = useState('')
   const grouped = getAgentsByDivisions()
 
-  const filtered = Object.entries(grouped).map(([div, divAgents]) => [
+  const filtered = Object.entries(grouped).map(([div, divAgents]): [string, typeof agents] => [
     div,
     divAgents.filter(a =>
       a.name.toLowerCase().includes(search.toLowerCase()) ||
       a.description.toLowerCase().includes(search.toLowerCase())
     ),
-  ]).filter(([, a]) => (a as any[]).length > 0) as [string, typeof agents][]
+  ]).filter(([, a]) => a.length > 0)
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
