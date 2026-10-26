@@ -56,7 +56,7 @@ export async function GET(req: Request) {
               ? "Meta adapter enabled. Per-workspace credentials required; live verification is recorded on each job."
               : "Manual export available. Live publishing disabled.",
           ai:
-            process.env.OPENROUTER_API_KEY && process.env.SOCIAL_AI_MODEL
+            process.env.SOCIAL_OPENROUTER_API_KEY && process.env.SOCIAL_AI_MODEL
               ? "configured, not live verified"
               : "unconfigured",
           metrics:

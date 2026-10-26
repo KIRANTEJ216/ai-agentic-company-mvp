@@ -71,3 +71,6 @@ Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`. Embedded P
 
 
 Follow-up migrations and resumable-upload bucket configuration: see [SOCIAL_PHASE2.md](SOCIAL_PHASE2.md).
+
+
+Migration 006 adds a USD admission ledger and requires the dedicated `SOCIAL_OPENROUTER_API_KEY` for Social generation; there is no fallback to the general-agent key. See [INTEGRATION_HANDOFF.md](INTEGRATION_HANDOFF.md) for budget semantics, staging requirements and remaining work.

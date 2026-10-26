@@ -29,6 +29,7 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
           "202610260003_resumable_uploads.sql",
           "202610260004_deletion_queue.sql",
           "202610260005_fact_versions.sql",
+          "202610260006_ai_budget.sql",
         ].map((name) => readFile(`supabase/migrations/${name}`, "utf8")),
       )
     ).join("\n"),
@@ -108,6 +109,7 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
   );
   await db.exec("reset role");
   await login(owner);
+  await command("ai_budget", { workspace_id: w, cap_usd: 0.1, hold_usd: 0.1 });
   const request = "10000000-0000-4000-8000-000000000001";
   await db.query("update social_workspaces set allowance=1 where id=$1", [w]);
   await command("reserve", {
@@ -144,6 +146,18 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
     "select allowance from social_workspaces",
   );
   assert.equal(budget.rows[0].allowance, 1);
+  await db.query("select social_record_cost($1,0.02,'gen-test')", [request]);
+  await db.query("select social_record_cost($1,0.02,'gen-test')", [request]);
+  await assert.rejects(
+    db.query("select social_record_cost($1,0.03,'gen-test')", [request]),
+    /differently/,
+  );
+  await login(editor);
+  await assert.rejects(
+    command("ai_budget", { workspace_id: w, cap_usd: 100, hold_usd: 1 }),
+    /Owner/,
+  );
+  await login(owner);
   // Approval and publishing work even with exhausted AI allowance.
   await db.query("update social_workspaces set allowance=0 where id=$1", [w]);
   await command("approve", { ...base, version: 2 });
@@ -291,6 +305,27 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
     ).rows[0].dismissed_by.length,
     1,
   );
+  await command("ai_budget", { workspace_id: w, cap_usd: 1, hold_usd: 0.1 });
+  await db.query("update social_workspaces set allowance=1 where id=$1", [w]);
+  const overage = "10000000-0000-4000-8000-000000000009";
+  await command("reserve", {
+    workspace_id: w,
+    product_id: product.id,
+    request_id: overage,
+  });
+  await db.query("select social_record_cost($1,0.2,'gen-overage')", [overage]);
+  assert.equal(
+    Number(
+      (
+        await db.query<{ ai_budget_usd: string }>(
+          "select ai_budget_usd from social_workspaces where id=$1",
+          [w],
+        )
+      ).rows[0].ai_budget_usd,
+    ),
+    0,
+  );
+  await db.query("select social_settle($1,'{}',true)", [overage]);
   // Upload manifests enforce exact chunks, identity, completion and immutable originals.
   const p2 = await command("product", {
     workspace_id: w,
@@ -365,6 +400,8 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
     "social_command_v1",
     "social_command_v2",
     "social_command_v3",
+    "social_command_v4",
+    "social_command_v5",
   ])
     await assert.rejects(
       db.query(`select ${name}('delete_workspace','{}')`),
@@ -374,6 +411,7 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
     db.query("select social_maintenance()"),
     /permission denied/,
   );
+  await assert.rejects(db.query("select social_record_cost($1,0,null)",[request]),/permission denied/);
   await db.exec("reset role");
   await assert.rejects(
     command("delete_workspace", { workspace_id: w, confirm_name: "wrong" }),

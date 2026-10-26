@@ -12,6 +12,8 @@ type Workspace = {
   id: string;
   name: string;
   allowance: number;
+  ai_budget_usd: number;
+  ai_request_hold_usd: number;
   paused: boolean;
   enquiry_retention_days: number | null;
 };
@@ -66,6 +68,9 @@ type Enquiry = {
   source: string;
 };
 type Usage = {
+  held_usd: number;
+  actual_usd: number | null;
+  provider_id: string | null;
   id: string;
   workspace_id: string;
   state: string;
@@ -600,6 +605,42 @@ export default function SocialPage() {
                   {role === "owner" && (
                     <section className="social-panel">
                       <h2>Workspace controls</h2>
+                      <h3>AI spending admission budget (USD)</h3>
+                      <p>
+                        Lifetime ledger, no automatic reset. Unknown costs
+                        retain the per-request hold. App units and USD are
+                        separate. Set a provider key limit too; this admission
+                        budget cannot guarantee the provider bill.
+                      </p>
+                      <form onSubmit={form("ai_budget")}>
+                        <label>
+                          Budget USD
+                          <input
+                            name="cap_usd"
+                            type="number"
+                            min="0"
+                            max="10000"
+                            step="0.000001"
+                            required
+                            defaultValue={w.ai_budget_usd}
+                          />
+                        </label>
+                        <label>
+                          Reservation per request USD
+                          <input
+                            name="hold_usd"
+                            type="number"
+                            min="0.000001"
+                            max="100"
+                            step="0.000001"
+                            required
+                            defaultValue={w.ai_request_hold_usd}
+                          />
+                        </label>
+                        <button disabled={busy}>
+                          Save USD admission limits
+                        </button>
+                      </form>
                       <button
                         disabled={busy}
                         onClick={() =>
@@ -1356,10 +1397,31 @@ export default function SocialPage() {
                       one unit. Uncertain requests remain reserved until
                       reconciled by an operator.
                     </p>
+                    <p>
+                      USD budget: {Number(w.ai_budget_usd).toFixed(6)}. Recorded
+                      costs plus unresolved holds:{" "}
+                      {usage
+                        .reduce(
+                          (sum, u) => sum + Number(u.actual_usd ?? u.held_usd),
+                          0,
+                        )
+                        .toFixed(6)}
+                      .
+                    </p>
+                    <button
+                      onClick={() =>
+                        download("ai-usage.csv", csv(usage), "text/csv")
+                      }
+                    >
+                      Export AI usage CSV
+                    </button>
                     {usage.map((u) => (
                       <p key={u.id}>
                         {new Date(u.created_at).toLocaleString()} • {u.units}{" "}
-                        unit • {u.state} • request {u.id}
+                        unit • {u.state} • request {u.id} •{" "}
+                        {u.actual_usd === null
+                          ? `Cost unknown; held USD ${u.held_usd}`
+                          : `Provider-reported USD ${u.actual_usd}`}
                       </p>
                     ))}
                   </section>
