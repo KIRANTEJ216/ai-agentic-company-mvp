@@ -18,7 +18,7 @@ export async function POST(req: Request) {
       .eq("id", p.brand_id)
       .single();
     if (!b) throw new Error("Brand not found");
-    if (!process.env.OPENROUTER_API_KEY || !process.env.SOCIAL_AI_MODEL)
+    if (!process.env.SOCIAL_OPENROUTER_API_KEY || !process.env.SOCIAL_AI_MODEL)
       throw new Error("AI unconfigured. Manual drafting remains available.");
     const { data: u, error } = await client.rpc("social_command", {
       action: "reserve",
@@ -32,6 +32,10 @@ export async function POST(req: Request) {
     if (u.state === "settled") return Response.json(u.result);
     if (u.state !== "reserved")
       throw new Error("Request was refunded; start a new request");
+    if (!(Number(u.held_usd) > 0))
+      throw new Error(
+        "Legacy reservation requires operator reconciliation before AI use",
+      );
     // Only the request that creates the reservation may call the model. RPC marks it started atomically.
     const { data: started, error: beginError } = await admin().rpc(
       "social_start_generation",
@@ -41,18 +45,44 @@ export async function POST(req: Request) {
       throw new Error(
         "Generation already in progress or awaiting reconciliation. Do not submit a new request to retry.",
       );
+    // Reservation prevents fact edits. Re-read after reserving to avoid using
+    // knowledge fetched immediately before a concurrent fact update.
+    const { data: currentProduct } = await client
+      .from("social_products")
+      .select("*")
+      .eq("id", p.id)
+      .single();
+    const { data: currentBrand } = await client
+      .from("social_brands")
+      .select("*")
+      .eq("id", p.brand_id)
+      .single();
+    if (!currentProduct || !currentBrand) {
+      await admin().rpc("social_record_cost", {
+        request_id: body.request_id,
+        cost_usd: 0,
+        generation_id: null,
+      });
+      await admin().rpc("social_settle", {
+        request_id: body.request_id,
+        output: { error: "Knowledge unavailable before provider call" },
+        refund: true,
+      });
+      throw new Error("Confirmed facts unavailable; provider was not called");
+    }
     let response: Response;
     try {
       response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         signal: AbortSignal.timeout(45000),
         headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          Authorization: `Bearer ${process.env.SOCIAL_OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           model: process.env.SOCIAL_AI_MODEL,
           max_tokens: 650,
+          usage: { include: true },
           response_format: { type: "json_object" },
           messages: [
             {
@@ -63,12 +93,12 @@ export async function POST(req: Request) {
             {
               role: "user",
               content: JSON.stringify({
-                brand: b.name,
-                facts: b.facts,
-                voice: b.voice,
-                language: b.locale,
-                product: p.name,
-                product_facts: p.facts,
+                brand: currentBrand.name,
+                facts: currentBrand.facts,
+                voice: currentBrand.voice,
+                language: currentBrand.locale,
+                product: currentProduct.name,
+                product_facts: currentProduct.facts,
               }),
             },
           ],
@@ -92,6 +122,23 @@ export async function POST(req: Request) {
       );
     }
     const data = await response.json();
+    // Missing/invalid cost is unknown, never free. Keep the reservation.
+    if (
+      typeof data.usage?.cost === "number" &&
+      Number.isFinite(data.usage.cost) &&
+      data.usage.cost >= 0 &&
+      typeof data.id === "string"
+    ) {
+      const { error: costError } = await admin().rpc("social_record_cost", {
+        request_id: body.request_id,
+        cost_usd: data.usage.cost,
+        generation_id: data.id,
+      });
+      if (costError)
+        throw new Error(
+          "Provider cost could not be recorded; reconcile before retrying",
+        );
+    }
     let result;
     try {
       result = JSON.parse(data.choices[0].message.content);

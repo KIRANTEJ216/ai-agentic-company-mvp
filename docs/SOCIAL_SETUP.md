@@ -48,7 +48,7 @@ Pilot allowance starts at 20 units per workspace. One owned workspace per user. 
 
 Deploy the Next.js server and a persistent worker or scheduler. Configure secrets separately in each environment; run migrations before directing traffic to the new module. Use TLS, private storage and database backups. Keep staging accounts isolated from production. Monitor failed/confirming jobs, old reservations, worker heartbeat and notification volume. Store structured logs without tokens, original files, or customer contact details. Document the hosting backup retention and test restoration before launch.
 
-Failure-email outbox code is implemented but unverified with a live sender. Set RESEND_API_KEY and SOCIAL_ALERT_FROM to a verified sender; the worker drains one email per poll. Uncertain sends are held for reconciliation. Connected OAuth health checks, automatic metrics ingestion, deletion workflows and resumable uploads are **not implemented**. Failures appear in-app after refresh regardless of email configuration. Asset uploads are bounded one-request uploads. Do not market the pilot as production complete. User deletion and retention requests currently require an operator to remove workspace rows and storage objects under a documented retention policy; automatic deletion is backlog.
+Failure-email outbox code is implemented but unverified with a live sender. Set RESEND_API_KEY and SOCIAL_ALERT_FROM to a verified sender; the worker drains one email per poll. Uncertain sends are held for reconciliation. Connected OAuth health checks and automatic metrics ingestion are **not implemented**. Failures appear in-app after refresh regardless of email configuration. Asset uploads use resumable, verified chunks; configure the bucket as described in SOCIAL_PHASE2.md. Do not market the pilot as production complete. Owner-controlled workspace deletion and enquiry retention run through the secured worker; provider backups and remote posts require separate handling.
 
 Legacy agent-chat/orchestration endpoints predate this module and are not covered by the social ledger. Restrict access/rate-limit them at the gateway before exposing paid provider keys publicly. This change does not claim to harden every legacy route. Stripe webhook signature verification was fixed; it still does not persist subscriptions or entitlements.
 
@@ -67,4 +67,10 @@ Run `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`. Embedded P
 * Manychat: owner-entered enquiries, stages and follow-up date. Conversation sync/automatic replies are deferred.
 * Pricing feedback: explicit pilot allowance and exactly-once app settlement; currency cost forecasting/checkout deferred.
 * Accessibility: labelled native forms, keyboard focus, status announcements and responsive layout. Formal accessibility conformance is unverified.
-* Next: OAuth connection management, real insights ingestion, better calendar month/week views, brand fact editing with downstream invalidation, alt text, crop controls, real campaign UTM attribution, content search, file deletion and retention, notifications read/dismiss, and mobile browser testing with authenticated staging data.
+* Next: OAuth connection management, real insights ingestion, brand fact editing with downstream invalidation, alt text, crop controls, real campaign UTM attribution, content search, notifications read/dismiss, and mobile browser testing with authenticated staging data.
+
+
+Follow-up migrations and resumable-upload bucket configuration: see [SOCIAL_PHASE2.md](SOCIAL_PHASE2.md).
+
+
+Migration 006 adds a USD admission ledger and requires the dedicated `SOCIAL_OPENROUTER_API_KEY` for Social generation; there is no fallback to the general-agent key. See [INTEGRATION_HANDOFF.md](INTEGRATION_HANDOFF.md) for budget semantics, staging requirements and remaining work.

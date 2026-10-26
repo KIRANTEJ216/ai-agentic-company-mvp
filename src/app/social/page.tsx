@@ -4,15 +4,21 @@ import { useEffect, useState, useCallback } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { csv } from "@/lib/social/domain";
 import { artwork } from "@/lib/social/artwork";
+import { SocialCalendar } from "@/components/social-calendar";
+import { SocialUpload } from "@/components/social-upload";
 import "./social.css";
 
 type Workspace = {
   id: string;
   name: string;
   allowance: number;
+  ai_budget_usd: number;
+  ai_request_hold_usd: number;
   paused: boolean;
+  enquiry_retention_days: number | null;
 };
 type Brand = {
+  version: number;
   id: string;
   workspace_id: string;
   name: string;
@@ -22,6 +28,7 @@ type Brand = {
   timezone: string;
 };
 type Product = {
+  version: number;
   id: string;
   workspace_id: string;
   brand_id: string;
@@ -61,6 +68,9 @@ type Enquiry = {
   source: string;
 };
 type Usage = {
+  held_usd: number;
+  actual_usd: number | null;
+  provider_id: string | null;
   id: string;
   workspace_id: string;
   state: string;
@@ -68,7 +78,13 @@ type Usage = {
   created_at: string;
   started_at: string | null;
 };
-type Notice = { id: string; workspace_id: string; message: string };
+type Notice = {
+  id: string;
+  workspace_id: string;
+  message: string;
+  read_by: string[];
+  dismissed_by: string[];
+};
 type Metric = {
   id: string;
   workspace_id: string;
@@ -76,6 +92,15 @@ type Metric = {
   value: number | null;
   definition: string;
   observed_at: string;
+};
+type Review = {
+  id: string;
+  workspace_id: string;
+  variant_id: string;
+  version: number;
+  kind: string;
+  message: string;
+  created_at: string;
 };
 type Data = {
   configured: boolean;
@@ -90,6 +115,7 @@ type Data = {
   usage: Usage[];
   notifications: Notice[];
   metrics: Metric[];
+  reviews: Review[];
   capabilities?: { publishing: string; ai: string; metrics: string };
 };
 const empty: Data = {
@@ -104,6 +130,7 @@ const empty: Data = {
   usage: [],
   notifications: [],
   metrics: [],
+  reviews: [],
 };
 const tabs = [
   "Today",
@@ -173,7 +200,8 @@ export default function SocialPage() {
     [busy, setBusy] = useState(false),
     [draft, setDraft] = useState<Record<string, string>>({}),
     [productId, setProductId] = useState(""),
-    [channelFilter, setChannelFilter] = useState("all");
+    [channelFilter, setChannelFilter] = useState("all"),
+    [search, setSearch] = useState("");
   const request = useCallback(
     async (path: string, init: RequestInit = {}) => {
       const { data: session } = client
@@ -199,7 +227,11 @@ export default function SocialPage() {
   const reload = useCallback(async () => {
     const result = await request("/api/social");
     setData(result);
-    setWorkspace((current) => current || result.workspaces?.[0]?.id || "");
+    setWorkspace((current) =>
+      result.workspaces?.some((w: Workspace) => w.id === current)
+        ? current
+        : result.workspaces?.[0]?.id || "",
+    );
   }, [request]);
   useEffect(() => {
     if (!client) return;
@@ -239,12 +271,12 @@ export default function SocialPage() {
       }),
     });
   }
-  function form(action: string) {
+  function form(action: string, extra: Record<string, unknown> = {}) {
     return (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       const f = e.currentTarget;
       void run(async () => {
-        await cmd(action, fields(f));
+        await cmd(action, { ...fields(f), ...extra });
         f.reset();
       });
     };
@@ -445,11 +477,36 @@ export default function SocialPage() {
                         ? "Publishing is paused."
                         : "Workspace publishing is enabled; live connection is still required."}
                     </p>
-                    {local(data.notifications).map((n) => (
-                      <p className="social-warning" key={n.id}>
-                        {n.message}
-                      </p>
-                    ))}
+                    {local(data.notifications)
+                      .filter(
+                        (n) => !n.dismissed_by.includes(data.user_id || ""),
+                      )
+                      .map((n) => (
+                        <p className="social-warning" key={n.id}>
+                          {n.message}{" "}
+                          {n.read_by.includes(data.user_id || "")
+                            ? "(Read)"
+                            : "(Unread)"}
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              void run(() => cmd("notice_read", { id: n.id }))
+                            }
+                          >
+                            Mark read
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              void run(() =>
+                                cmd("notice_dismiss", { id: n.id }),
+                              )
+                            }
+                          >
+                            Dismiss for me
+                          </button>
+                        </p>
+                      ))}
                     <button onClick={() => setTab("Create")}>
                       Create your next post
                     </button>
@@ -501,9 +558,44 @@ export default function SocialPage() {
                       </button>
                     </form>
                     {brands.map((b) => (
-                      <article key={b.id}>
+                      <article key={`${b.id}:${b.version}`}>
                         <h3>{b.name}</h3>
                         <p>{b.facts}</p>
+                        <details>
+                          <summary>Edit confirmed facts</summary>
+                          <p>
+                            Changing facts cancels affected schedules and
+                            requires fresh review. Captions are not rewritten.
+                          </p>
+                          <form
+                            onSubmit={form("brand_edit", {
+                              id: b.id,
+                              version: b.version,
+                            })}
+                          >
+                            <label>
+                              Brand name
+                              <input
+                                name="name"
+                                required
+                                maxLength={120}
+                                defaultValue={b.name}
+                              />
+                            </label>
+                            <label>
+                              Confirmed facts
+                              <textarea
+                                name="facts"
+                                required
+                                maxLength={6000}
+                                defaultValue={b.facts}
+                              />
+                            </label>
+                            <button disabled={busy || role === "reviewer"}>
+                              Save fact version {b.version + 1}
+                            </button>
+                          </form>
+                        </details>
                         <small>
                           {b.locale} • {b.timezone}
                         </small>
@@ -513,6 +605,42 @@ export default function SocialPage() {
                   {role === "owner" && (
                     <section className="social-panel">
                       <h2>Workspace controls</h2>
+                      <h3>AI spending admission budget (USD)</h3>
+                      <p>
+                        Lifetime ledger, no automatic reset. Unknown costs
+                        retain the per-request hold. App units and USD are
+                        separate. Set a provider key limit too; this admission
+                        budget cannot guarantee the provider bill.
+                      </p>
+                      <form onSubmit={form("ai_budget")}>
+                        <label>
+                          Budget USD
+                          <input
+                            name="cap_usd"
+                            type="number"
+                            min="0"
+                            max="10000"
+                            step="0.000001"
+                            required
+                            defaultValue={w.ai_budget_usd}
+                          />
+                        </label>
+                        <label>
+                          Reservation per request USD
+                          <input
+                            name="hold_usd"
+                            type="number"
+                            min="0.000001"
+                            max="100"
+                            step="0.000001"
+                            required
+                            defaultValue={w.ai_request_hold_usd}
+                          />
+                        </label>
+                        <button disabled={busy}>
+                          Save USD admission limits
+                        </button>
+                      </form>
                       <button
                         disabled={busy}
                         onClick={() =>
@@ -521,6 +649,56 @@ export default function SocialPage() {
                       >
                         {w.paused ? "Resume publishing" : "Pause publishing"}
                       </button>
+                      <h3>Enquiry retention</h3>
+                      <p>
+                        Automatically delete owner-entered enquiries older than
+                        this period, regardless of stage. Disabled by default.
+                        Runs when the worker polls.
+                      </p>
+                      <form onSubmit={form("retention")}>
+                        <label>
+                          Retention period
+                          <select
+                            name="days"
+                            defaultValue={w.enquiry_retention_days || ""}
+                          >
+                            <option value="">
+                              Keep until manually deleted
+                            </option>
+                            <option value="30">30 days</option>
+                            <option value="90">90 days</option>
+                            <option value="365">365 days</option>
+                          </select>
+                        </label>
+                        <button disabled={busy}>Save retention policy</button>
+                      </form>
+                      <h3>Delete workspace</h3>
+                      <p>
+                        This removes access immediately, cancels pending
+                        schedules, and queues permanent records and storage
+                        cleanup after a 10 minute quarantine. Published social
+                        posts and backups are not deleted. This cannot be undone
+                        in the app.
+                      </p>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const values = fields(e.currentTarget);
+                          void run(() => cmd("delete_workspace", values));
+                        }}
+                      >
+                        <label>
+                          Type {w.name} to request permanent deletion
+                          <input
+                            name="confirm_name"
+                            required
+                            autoComplete="off"
+                          />
+                        </label>
+                        <button disabled={busy}>
+                          Request permanent workspace deletion
+                        </button>
+                      </form>
                       <h3>Add existing user</h3>
                       <p>
                         Use the Supabase Auth user UUID of a team member who has
@@ -599,32 +777,48 @@ export default function SocialPage() {
                           product={selectedProduct}
                         />
                         <p>{selectedProduct.facts}</p>
-                        <form
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            const fd = new FormData(e.currentTarget);
-                            fd.set("product_id", productId);
-                            void run(() =>
-                              request("/api/social/upload", {
-                                method: "POST",
-                                body: fd,
-                              }),
-                            );
-                          }}
-                        >
-                          <label>
-                            Original JPEG or PNG up to 8 MB
-                            <input
-                              type="file"
-                              name="file"
-                              accept="image/jpeg,image/png"
-                              required
-                            />
-                          </label>
-                          <button disabled={busy || role === "reviewer"}>
-                            Upload original
-                          </button>
-                        </form>
+                        <details>
+                          <summary>Edit product facts</summary>
+                          <p>
+                            Changing facts cancels affected schedules and
+                            requires fresh review.
+                          </p>
+                          <form
+                            key={`${selectedProduct.id}:${selectedProduct.version}`}
+                            onSubmit={form("product_edit", {
+                              id: selectedProduct.id,
+                              version: selectedProduct.version,
+                            })}
+                          >
+                            <label>
+                              Product name
+                              <input
+                                name="name"
+                                required
+                                maxLength={120}
+                                defaultValue={selectedProduct.name}
+                              />
+                            </label>
+                            <label>
+                              Confirmed facts
+                              <textarea
+                                name="facts"
+                                required
+                                maxLength={6000}
+                                defaultValue={selectedProduct.facts}
+                              />
+                            </label>
+                            <button disabled={busy || role === "reviewer"}>
+                              Save fact version {selectedProduct.version + 1}
+                            </button>
+                          </form>
+                        </details>
+                        <SocialUpload
+                          productId={productId}
+                          request={request}
+                          onComplete={reload}
+                          disabled={busy || role === "reviewer"}
+                        />
                         <small>
                           Image is locked after the first draft. Create another
                           product to change it.
@@ -734,13 +928,48 @@ export default function SocialPage() {
                       <option value="facebook">Facebook</option>
                     </select>
                   </label>
+                  <label>
+                    Search posts
+                    <input
+                      type="search"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Caption or product name"
+                    />
+                  </label>
+                  {tab === "Calendar" && (
+                    <SocialCalendar
+                      jobs={jobs.filter(
+                        (j) =>
+                          j.state !== "cancelled" &&
+                          (channelFilter === "all" ||
+                            variants.find((v) => v.id === j.variant_id)
+                              ?.channel === channelFilter),
+                      )}
+                      labels={Object.fromEntries(
+                        variants.map((v) => [
+                          v.id,
+                          `${v.channel}: ${products.find((p) => p.id === v.product_id)?.name || "Post"}`,
+                        ]),
+                      )}
+                    />
+                  )}
                   {variants.length === 0 && (
                     <p>No posts yet. Save a product draft to begin.</p>
                   )}
                   {variants
                     .filter(
                       (v) =>
-                        channelFilter === "all" || v.channel === channelFilter,
+                        (channelFilter === "all" ||
+                          v.channel === channelFilter) &&
+                        (
+                          v.caption +
+                          " " +
+                          (products.find((p) => p.id === v.product_id)?.name ||
+                            "")
+                        )
+                          .toLocaleLowerCase()
+                          .includes(search.toLocaleLowerCase()),
                     )
                     .map((v) => {
                       const p = products.find((p) => p.id === v.product_id);
@@ -750,7 +979,11 @@ export default function SocialPage() {
                           a.scheduled_at.localeCompare(b.scheduled_at),
                         );
                       return (
-                        <article key={v.id} className="social-post">
+                        <article
+                          id={"post-" + v.id}
+                          key={v.id}
+                          className="social-post"
+                        >
                           <div className="social-post-heading">
                             <h3>
                               {p?.name} / {v.channel}
@@ -794,6 +1027,64 @@ export default function SocialPage() {
                               Save and invalidate approval
                             </button>
                           </form>
+                          <section aria-label="Versioned review feedback">
+                            <h3>Review history</h3>
+                            {local(data.reviews)
+                              .filter((r) => r.variant_id === v.id)
+                              .map((r) => (
+                                <p key={r.id}>
+                                  <strong>
+                                    {r.kind.replaceAll("_", " ")} · v{r.version}
+                                  </strong>{" "}
+                                  · {new Date(r.created_at).toLocaleString()}
+                                  <br />
+                                  {r.message}
+                                </p>
+                              ))}
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                const values = fields(e.currentTarget);
+                                void run(() =>
+                                  cmd(String(values.action), {
+                                    variant_id: v.id,
+                                    version: v.version,
+                                    message: values.message,
+                                  }),
+                                );
+                              }}
+                            >
+                              <label>
+                                Feedback
+                                <textarea
+                                  name="message"
+                                  required
+                                  maxLength={2000}
+                                />
+                              </label>
+                              <label>
+                                Review action
+                                <select name="action">
+                                  <option value="review_comment">
+                                    Add comment
+                                  </option>
+                                  {role !== "reviewer" && (
+                                    <option value="review_request">
+                                      Request review
+                                    </option>
+                                  )}
+                                  {role !== "editor" && (
+                                    <option value="request_changes">
+                                      Request changes and revoke approval
+                                    </option>
+                                  )}
+                                </select>
+                              </label>
+                              <button disabled={busy}>
+                                Save feedback for version {v.version}
+                              </button>
+                            </form>
+                          </section>
                           <div className="social-actions">
                             <button
                               disabled={busy || !p?.object_key}
@@ -1033,6 +1324,23 @@ export default function SocialPage() {
                           Update
                         </button>
                       </form>
+                      {role === "owner" && (
+                        <button
+                          disabled={busy}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                "Permanently delete this enquiry and contact details?",
+                              )
+                            )
+                              void run(() =>
+                                cmd("delete_enquiry", { id: e.id }),
+                              );
+                          }}
+                        >
+                          Delete enquiry
+                        </button>
+                      )}
                     </article>
                   ))}
                 </section>
@@ -1089,10 +1397,31 @@ export default function SocialPage() {
                       one unit. Uncertain requests remain reserved until
                       reconciled by an operator.
                     </p>
+                    <p>
+                      USD budget: {Number(w.ai_budget_usd).toFixed(6)}. Recorded
+                      costs plus unresolved holds:{" "}
+                      {usage
+                        .reduce(
+                          (sum, u) => sum + Number(u.actual_usd ?? u.held_usd),
+                          0,
+                        )
+                        .toFixed(6)}
+                      .
+                    </p>
+                    <button
+                      onClick={() =>
+                        download("ai-usage.csv", csv(usage), "text/csv")
+                      }
+                    >
+                      Export AI usage CSV
+                    </button>
                     {usage.map((u) => (
                       <p key={u.id}>
                         {new Date(u.created_at).toLocaleString()} • {u.units}{" "}
-                        unit • {u.state} • request {u.id}
+                        unit • {u.state} • request {u.id} •{" "}
+                        {u.actual_usd === null
+                          ? `Cost unknown; held USD ${u.held_usd}`
+                          : `Provider-reported USD ${u.actual_usd}`}
                       </p>
                     ))}
                   </section>
