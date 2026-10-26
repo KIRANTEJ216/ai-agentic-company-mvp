@@ -16,6 +16,7 @@ type Workspace = {
   enquiry_retention_days: number | null;
 };
 type Brand = {
+  version: number;
   id: string;
   workspace_id: string;
   name: string;
@@ -25,6 +26,7 @@ type Brand = {
   timezone: string;
 };
 type Product = {
+  version: number;
   id: string;
   workspace_id: string;
   brand_id: string;
@@ -71,7 +73,13 @@ type Usage = {
   created_at: string;
   started_at: string | null;
 };
-type Notice = { id: string; workspace_id: string; message: string };
+type Notice = {
+  id: string;
+  workspace_id: string;
+  message: string;
+  read_by: string[];
+  dismissed_by: string[];
+};
 type Metric = {
   id: string;
   workspace_id: string;
@@ -187,7 +195,8 @@ export default function SocialPage() {
     [busy, setBusy] = useState(false),
     [draft, setDraft] = useState<Record<string, string>>({}),
     [productId, setProductId] = useState(""),
-    [channelFilter, setChannelFilter] = useState("all");
+    [channelFilter, setChannelFilter] = useState("all"),
+    [search, setSearch] = useState("");
   const request = useCallback(
     async (path: string, init: RequestInit = {}) => {
       const { data: session } = client
@@ -257,12 +266,12 @@ export default function SocialPage() {
       }),
     });
   }
-  function form(action: string) {
+  function form(action: string, extra: Record<string, unknown> = {}) {
     return (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       const f = e.currentTarget;
       void run(async () => {
-        await cmd(action, fields(f));
+        await cmd(action, { ...fields(f), ...extra });
         f.reset();
       });
     };
@@ -463,11 +472,36 @@ export default function SocialPage() {
                         ? "Publishing is paused."
                         : "Workspace publishing is enabled; live connection is still required."}
                     </p>
-                    {local(data.notifications).map((n) => (
-                      <p className="social-warning" key={n.id}>
-                        {n.message}
-                      </p>
-                    ))}
+                    {local(data.notifications)
+                      .filter(
+                        (n) => !n.dismissed_by.includes(data.user_id || ""),
+                      )
+                      .map((n) => (
+                        <p className="social-warning" key={n.id}>
+                          {n.message}{" "}
+                          {n.read_by.includes(data.user_id || "")
+                            ? "(Read)"
+                            : "(Unread)"}
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              void run(() => cmd("notice_read", { id: n.id }))
+                            }
+                          >
+                            Mark read
+                          </button>
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              void run(() =>
+                                cmd("notice_dismiss", { id: n.id }),
+                              )
+                            }
+                          >
+                            Dismiss for me
+                          </button>
+                        </p>
+                      ))}
                     <button onClick={() => setTab("Create")}>
                       Create your next post
                     </button>
@@ -519,9 +553,44 @@ export default function SocialPage() {
                       </button>
                     </form>
                     {brands.map((b) => (
-                      <article key={b.id}>
+                      <article key={`${b.id}:${b.version}`}>
                         <h3>{b.name}</h3>
                         <p>{b.facts}</p>
+                        <details>
+                          <summary>Edit confirmed facts</summary>
+                          <p>
+                            Changing facts cancels affected schedules and
+                            requires fresh review. Captions are not rewritten.
+                          </p>
+                          <form
+                            onSubmit={form("brand_edit", {
+                              id: b.id,
+                              version: b.version,
+                            })}
+                          >
+                            <label>
+                              Brand name
+                              <input
+                                name="name"
+                                required
+                                maxLength={120}
+                                defaultValue={b.name}
+                              />
+                            </label>
+                            <label>
+                              Confirmed facts
+                              <textarea
+                                name="facts"
+                                required
+                                maxLength={6000}
+                                defaultValue={b.facts}
+                              />
+                            </label>
+                            <button disabled={busy || role === "reviewer"}>
+                              Save fact version {b.version + 1}
+                            </button>
+                          </form>
+                        </details>
                         <small>
                           {b.locale} • {b.timezone}
                         </small>
@@ -667,6 +736,42 @@ export default function SocialPage() {
                           product={selectedProduct}
                         />
                         <p>{selectedProduct.facts}</p>
+                        <details>
+                          <summary>Edit product facts</summary>
+                          <p>
+                            Changing facts cancels affected schedules and
+                            requires fresh review.
+                          </p>
+                          <form
+                            key={`${selectedProduct.id}:${selectedProduct.version}`}
+                            onSubmit={form("product_edit", {
+                              id: selectedProduct.id,
+                              version: selectedProduct.version,
+                            })}
+                          >
+                            <label>
+                              Product name
+                              <input
+                                name="name"
+                                required
+                                maxLength={120}
+                                defaultValue={selectedProduct.name}
+                              />
+                            </label>
+                            <label>
+                              Confirmed facts
+                              <textarea
+                                name="facts"
+                                required
+                                maxLength={6000}
+                                defaultValue={selectedProduct.facts}
+                              />
+                            </label>
+                            <button disabled={busy || role === "reviewer"}>
+                              Save fact version {selectedProduct.version + 1}
+                            </button>
+                          </form>
+                        </details>
                         <SocialUpload
                           productId={productId}
                           request={request}
@@ -782,6 +887,15 @@ export default function SocialPage() {
                       <option value="facebook">Facebook</option>
                     </select>
                   </label>
+                  <label>
+                    Search posts
+                    <input
+                      type="search"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Caption or product name"
+                    />
+                  </label>
                   {tab === "Calendar" && (
                     <SocialCalendar
                       jobs={jobs.filter(
@@ -805,7 +919,16 @@ export default function SocialPage() {
                   {variants
                     .filter(
                       (v) =>
-                        channelFilter === "all" || v.channel === channelFilter,
+                        (channelFilter === "all" ||
+                          v.channel === channelFilter) &&
+                        (
+                          v.caption +
+                          " " +
+                          (products.find((p) => p.id === v.product_id)?.name ||
+                            "")
+                        )
+                          .toLocaleLowerCase()
+                          .includes(search.toLocaleLowerCase()),
                     )
                     .map((v) => {
                       const p = products.find((p) => p.id === v.product_id);

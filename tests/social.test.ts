@@ -28,6 +28,7 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
           "202610260002_review_retention.sql",
           "202610260003_resumable_uploads.sql",
           "202610260004_deletion_queue.sql",
+          "202610260005_fact_versions.sql",
         ].map((name) => readFile(`supabase/migrations/${name}`, "utf8")),
       )
     ).join("\n"),
@@ -217,10 +218,79 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
     command("retention", { workspace_id: w, days: 7 }),
     /check constraint/,
   );
-  await db.query("insert into social_enquiries(workspace_id,name,created_at) values($1,'old',now()-interval '31 days'),($1,'recent',now())",[w]);
+  await db.query(
+    "insert into social_enquiries(workspace_id,name,created_at) values($1,'old',now()-interval '31 days'),($1,'recent',now())",
+    [w],
+  );
   await db.query("select social_maintenance()");
-  assert.equal((await db.query<{name:string}>("select name from social_enquiries")).rows[0].name,"recent");
-  assert.equal((await db.query("select * from social_enquiries")).rows.length,1);
+  assert.equal(
+    (await db.query<{ name: string }>("select name from social_enquiries"))
+      .rows[0].name,
+    "recent",
+  );
+  assert.equal(
+    (await db.query("select * from social_enquiries")).rows.length,
+    1,
+  );
+  await command("approve", { ...base, version: 2 });
+  await command("schedule", { ...base, scheduled_at: "2099-04-01" });
+  await command("product_edit", {
+    workspace_id: w,
+    id: product.id,
+    version: 1,
+    name: "Silk blouse",
+    facts: "Confirmed updated material",
+  });
+  const changed = await db.query<{ version: number; approved_version: null }>(
+    "select version,approved_version from social_variants where id=$1",
+    [variant.id],
+  );
+  assert.equal(changed.rows[0].version, 3);
+  assert.equal(changed.rows[0].approved_version, null);
+  await assert.rejects(
+    command("product_edit", {
+      workspace_id: w,
+      id: product.id,
+      version: 1,
+      name: "Stale",
+      facts: "stale",
+    }),
+    /changed/,
+  );
+  await login(editor);
+  await command("brand_edit", {
+    workspace_id: w,
+    id: brand.id,
+    version: 1,
+    name: "Needle",
+    facts: "Updated verified location",
+  });
+  await login(other);
+  await assert.rejects(
+    command("brand_edit", {
+      workspace_id: w,
+      id: brand.id,
+      version: 2,
+      name: "Stolen",
+      facts: "x",
+    }),
+    /access denied/,
+  );
+  await login(owner);
+  const notices = await db.query<{ id: string }>(
+    "select id from social_notifications order by created_at desc limit 1",
+  );
+  await command("notice_dismiss", { workspace_id: w, id: notices.rows[0].id });
+  await command("notice_dismiss", { workspace_id: w, id: notices.rows[0].id });
+  assert.equal(
+    (
+      await db.query<{ dismissed_by: string[] }>(
+        "select dismissed_by from social_notifications where id=$1",
+        [notices.rows[0].id],
+      )
+    ).rows[0].dismissed_by.length,
+    1,
+  );
   // Upload manifests enforce exact chunks, identity, completion and immutable originals.
   const p2 = await command("product", {
     workspace_id: w,
@@ -404,15 +474,14 @@ test("Request body limits apply without trusting Content-Length", async () => {
   await assert.rejects(readBounded(req, 3), /too large/);
 });
 
-
 test("Calendar covers leap months and whole local weeks", async () => {
-  const {calendarDays,dayKey}=await import("../src/lib/social/calendar");
-  const month=calendarDays(new Date(2024,1,15),"month");
-  assert.equal(month.length,42);
-  assert.equal(month[0].getDay(),0);
-  assert.ok(month.some(day=>dayKey(day)==="2024-02-29"));
-  const week=calendarDays(new Date(2026,2,8),"week");
-  assert.equal(week.length,7);
-  assert.equal(new Set(week.map(dayKey)).size,7);
-  assert.equal(week[6].getDay(),6);
+  const { calendarDays, dayKey } = await import("../src/lib/social/calendar");
+  const month = calendarDays(new Date(2024, 1, 15), "month");
+  assert.equal(month.length, 42);
+  assert.equal(month[0].getDay(), 0);
+  assert.ok(month.some((day) => dayKey(day) === "2024-02-29"));
+  const week = calendarDays(new Date(2026, 2, 8), "week");
+  assert.equal(week.length, 7);
+  assert.equal(new Set(week.map(dayKey)).size, 7);
+  assert.equal(week[6].getDay(), 6);
 });

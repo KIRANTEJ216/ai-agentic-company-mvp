@@ -41,6 +41,26 @@ export async function POST(req: Request) {
       throw new Error(
         "Generation already in progress or awaiting reconciliation. Do not submit a new request to retry.",
       );
+    // Reservation prevents fact edits. Re-read after reserving to avoid using
+    // knowledge fetched immediately before a concurrent fact update.
+    const { data: currentProduct } = await client
+      .from("social_products")
+      .select("*")
+      .eq("id", p.id)
+      .single();
+    const { data: currentBrand } = await client
+      .from("social_brands")
+      .select("*")
+      .eq("id", p.brand_id)
+      .single();
+    if (!currentProduct || !currentBrand) {
+      await admin().rpc("social_settle", {
+        request_id: body.request_id,
+        output: { error: "Knowledge unavailable before provider call" },
+        refund: true,
+      });
+      throw new Error("Confirmed facts unavailable; provider was not called");
+    }
     let response: Response;
     try {
       response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -63,12 +83,12 @@ export async function POST(req: Request) {
             {
               role: "user",
               content: JSON.stringify({
-                brand: b.name,
-                facts: b.facts,
-                voice: b.voice,
-                language: b.locale,
-                product: p.name,
-                product_facts: p.facts,
+                brand: currentBrand.name,
+                facts: currentBrand.facts,
+                voice: currentBrand.voice,
+                language: currentBrand.locale,
+                product: currentProduct.name,
+                product_facts: currentProduct.facts,
               }),
             },
           ],

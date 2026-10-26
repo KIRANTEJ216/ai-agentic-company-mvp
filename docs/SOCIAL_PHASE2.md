@@ -21,3 +21,11 @@ The former single-request POST `/api/social/upload` returns HTTP 410; use `/api/
 Database tests execute all migrations in PostgreSQL (PGlite), including existing publication safeguards, role restrictions, hidden legacy command functions, exact-version reviews, upload manifests, approval invalidation and quarantine/purge cleanup. Type checking, lint, production build and local HTTP smoke checks are run separately. No live Supabase storage, OAuth, social publication, email or production deployment is claimed by these tests.
 
 Still pending: self-service OAuth and credential lifecycle, provider-backed analytics ingestion, live account verification, real monetary AI spending controls, richer crop editing and accessibility testing with a browser/screen reader. Connected inbox automation, listening, advertising, advanced video and additional channels remain phased backlog. Missing metrics remain unavailable rather than invented.
+
+## Fact maintenance and alert follow-up (migration 005)
+
+Apply `202610260005_fact_versions.sql` before deploying this update. Editors/owners can edit product and brand names and confirmed facts with optimistic version checks. Affected queued deliveries are cancelled; content versions increment, approval is cleared, and captions require manual correction and fresh approval. Existing published evidence is retained. Fact editing is blocked while affected publication is in progress/uncertain or AI generation is reserved. AI re-reads knowledge after reservation to avoid racing fact edits.
+
+Alerts support per-user read/dismiss actions. Dismissing does not change delivery state, email delivery or reconciliation requirements. Search filters the post list by caption/product name; calendar delivery visibility is retained. No new provider permissions or environment variables are introduced.
+
+Recommended next release gates: authenticated mobile keyboard/screen-reader testing, self-service OAuth with encrypted token rotation and revocation, provider-specific insight definitions and freshness, and an independently reconciled monetary spending ledger. Monetary caps must account for uncertain provider charges before enabling automatic paid retries; existing app units are not a currency budget. These capabilities are still pending and must not be advertised as complete.
