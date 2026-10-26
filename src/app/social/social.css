@@ -215,3 +215,43 @@
     flex-direction: column;
   }
 }
+.social-calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border: 1px solid #d7e1e8;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 16px 0;
+}
+.social-day {
+  min-height: 100px;
+  padding: 8px;
+  border: 1px solid #e2e8ec;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  background: #fafcfd;
+}
+.social-day time {
+  font-weight: 700;
+}
+.social-day a {
+  display: block;
+  margin-top: 6px;
+  padding: 4px;
+  border-radius: 4px;
+  background: #e5f1f3;
+}
+.social-day-today {
+  box-shadow: inset 0 0 0 2px #16728b;
+}
+.social-post {
+  scroll-margin-top: 20px;
+}
+@media (max-width: 600px) {
+  .social-calendar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .social-day {
+    min-height: 80px;
+  }
+}

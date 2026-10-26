@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { csv } from "@/lib/social/domain";
 import { artwork } from "@/lib/social/artwork";
+import { SocialCalendar } from "@/components/social-calendar";
+import { SocialUpload } from "@/components/social-upload";
 import "./social.css";
 
 type Workspace = {
@@ -11,6 +13,7 @@ type Workspace = {
   name: string;
   allowance: number;
   paused: boolean;
+  enquiry_retention_days: number | null;
 };
 type Brand = {
   id: string;
@@ -77,6 +80,15 @@ type Metric = {
   definition: string;
   observed_at: string;
 };
+type Review = {
+  id: string;
+  workspace_id: string;
+  variant_id: string;
+  version: number;
+  kind: string;
+  message: string;
+  created_at: string;
+};
 type Data = {
   configured: boolean;
   user_id?: string;
@@ -90,6 +102,7 @@ type Data = {
   usage: Usage[];
   notifications: Notice[];
   metrics: Metric[];
+  reviews: Review[];
   capabilities?: { publishing: string; ai: string; metrics: string };
 };
 const empty: Data = {
@@ -104,6 +117,7 @@ const empty: Data = {
   usage: [],
   notifications: [],
   metrics: [],
+  reviews: [],
 };
 const tabs = [
   "Today",
@@ -199,7 +213,11 @@ export default function SocialPage() {
   const reload = useCallback(async () => {
     const result = await request("/api/social");
     setData(result);
-    setWorkspace((current) => current || result.workspaces?.[0]?.id || "");
+    setWorkspace((current) =>
+      result.workspaces?.some((w: Workspace) => w.id === current)
+        ? current
+        : result.workspaces?.[0]?.id || "",
+    );
   }, [request]);
   useEffect(() => {
     if (!client) return;
@@ -521,6 +539,56 @@ export default function SocialPage() {
                       >
                         {w.paused ? "Resume publishing" : "Pause publishing"}
                       </button>
+                      <h3>Enquiry retention</h3>
+                      <p>
+                        Automatically delete owner-entered enquiries older than
+                        this period, regardless of stage. Disabled by default.
+                        Runs when the worker polls.
+                      </p>
+                      <form onSubmit={form("retention")}>
+                        <label>
+                          Retention period
+                          <select
+                            name="days"
+                            defaultValue={w.enquiry_retention_days || ""}
+                          >
+                            <option value="">
+                              Keep until manually deleted
+                            </option>
+                            <option value="30">30 days</option>
+                            <option value="90">90 days</option>
+                            <option value="365">365 days</option>
+                          </select>
+                        </label>
+                        <button disabled={busy}>Save retention policy</button>
+                      </form>
+                      <h3>Delete workspace</h3>
+                      <p>
+                        This removes access immediately, cancels pending
+                        schedules, and queues permanent records and storage
+                        cleanup after a 10 minute quarantine. Published social
+                        posts and backups are not deleted. This cannot be undone
+                        in the app.
+                      </p>
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const values = fields(e.currentTarget);
+                          void run(() => cmd("delete_workspace", values));
+                        }}
+                      >
+                        <label>
+                          Type {w.name} to request permanent deletion
+                          <input
+                            name="confirm_name"
+                            required
+                            autoComplete="off"
+                          />
+                        </label>
+                        <button disabled={busy}>
+                          Request permanent workspace deletion
+                        </button>
+                      </form>
                       <h3>Add existing user</h3>
                       <p>
                         Use the Supabase Auth user UUID of a team member who has
@@ -599,32 +667,12 @@ export default function SocialPage() {
                           product={selectedProduct}
                         />
                         <p>{selectedProduct.facts}</p>
-                        <form
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            const fd = new FormData(e.currentTarget);
-                            fd.set("product_id", productId);
-                            void run(() =>
-                              request("/api/social/upload", {
-                                method: "POST",
-                                body: fd,
-                              }),
-                            );
-                          }}
-                        >
-                          <label>
-                            Original JPEG or PNG up to 8 MB
-                            <input
-                              type="file"
-                              name="file"
-                              accept="image/jpeg,image/png"
-                              required
-                            />
-                          </label>
-                          <button disabled={busy || role === "reviewer"}>
-                            Upload original
-                          </button>
-                        </form>
+                        <SocialUpload
+                          productId={productId}
+                          request={request}
+                          onComplete={reload}
+                          disabled={busy || role === "reviewer"}
+                        />
                         <small>
                           Image is locked after the first draft. Create another
                           product to change it.
@@ -734,6 +782,23 @@ export default function SocialPage() {
                       <option value="facebook">Facebook</option>
                     </select>
                   </label>
+                  {tab === "Calendar" && (
+                    <SocialCalendar
+                      jobs={jobs.filter(
+                        (j) =>
+                          j.state !== "cancelled" &&
+                          (channelFilter === "all" ||
+                            variants.find((v) => v.id === j.variant_id)
+                              ?.channel === channelFilter),
+                      )}
+                      labels={Object.fromEntries(
+                        variants.map((v) => [
+                          v.id,
+                          `${v.channel}: ${products.find((p) => p.id === v.product_id)?.name || "Post"}`,
+                        ]),
+                      )}
+                    />
+                  )}
                   {variants.length === 0 && (
                     <p>No posts yet. Save a product draft to begin.</p>
                   )}
@@ -750,7 +815,11 @@ export default function SocialPage() {
                           a.scheduled_at.localeCompare(b.scheduled_at),
                         );
                       return (
-                        <article key={v.id} className="social-post">
+                        <article
+                          id={"post-" + v.id}
+                          key={v.id}
+                          className="social-post"
+                        >
                           <div className="social-post-heading">
                             <h3>
                               {p?.name} / {v.channel}
@@ -794,6 +863,64 @@ export default function SocialPage() {
                               Save and invalidate approval
                             </button>
                           </form>
+                          <section aria-label="Versioned review feedback">
+                            <h3>Review history</h3>
+                            {local(data.reviews)
+                              .filter((r) => r.variant_id === v.id)
+                              .map((r) => (
+                                <p key={r.id}>
+                                  <strong>
+                                    {r.kind.replaceAll("_", " ")} · v{r.version}
+                                  </strong>{" "}
+                                  · {new Date(r.created_at).toLocaleString()}
+                                  <br />
+                                  {r.message}
+                                </p>
+                              ))}
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                const values = fields(e.currentTarget);
+                                void run(() =>
+                                  cmd(String(values.action), {
+                                    variant_id: v.id,
+                                    version: v.version,
+                                    message: values.message,
+                                  }),
+                                );
+                              }}
+                            >
+                              <label>
+                                Feedback
+                                <textarea
+                                  name="message"
+                                  required
+                                  maxLength={2000}
+                                />
+                              </label>
+                              <label>
+                                Review action
+                                <select name="action">
+                                  <option value="review_comment">
+                                    Add comment
+                                  </option>
+                                  {role !== "reviewer" && (
+                                    <option value="review_request">
+                                      Request review
+                                    </option>
+                                  )}
+                                  {role !== "editor" && (
+                                    <option value="request_changes">
+                                      Request changes and revoke approval
+                                    </option>
+                                  )}
+                                </select>
+                              </label>
+                              <button disabled={busy}>
+                                Save feedback for version {v.version}
+                              </button>
+                            </form>
+                          </section>
                           <div className="social-actions">
                             <button
                               disabled={busy || !p?.object_key}
@@ -1033,6 +1160,23 @@ export default function SocialPage() {
                           Update
                         </button>
                       </form>
+                      {role === "owner" && (
+                        <button
+                          disabled={busy}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                "Permanently delete this enquiry and contact details?",
+                              )
+                            )
+                              void run(() =>
+                                cmd("delete_enquiry", { id: e.id }),
+                              );
+                          }}
+                        >
+                          Delete enquiry
+                        </button>
+                      )}
                     </article>
                   ))}
                 </section>

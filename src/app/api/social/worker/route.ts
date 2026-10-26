@@ -1,4 +1,5 @@
 export const maxDuration = 120;
+import { maintainSocial } from "@/lib/social/maintenance";
 import { dispatchAlert } from "@/lib/social/alerts";
 import { timingSafeEqual } from "node:crypto";
 import { admin, fail } from "@/lib/social/server";
@@ -15,6 +16,11 @@ export async function POST(req: Request) {
       !timingSafeEqual(Buffer.from(got), Buffer.from(secret))
     )
       return Response.json({ error: "Unauthorised" }, { status: 401 });
+    try {
+      await maintainSocial();
+    } catch {
+      console.error("Social maintenance requires attention");
+    }
     try {
       await dispatchAlert();
     } catch {

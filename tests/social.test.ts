@@ -21,7 +21,16 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
     `create schema auth; create table auth.users(id uuid primary key); create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$; create role authenticated; create role anon; create role service_role;`,
   );
   await db.exec(
-    await readFile("supabase/migrations/202610260001_social.sql", "utf8"),
+    (
+      await Promise.all(
+        [
+          "202610260001_social.sql",
+          "202610260002_review_retention.sql",
+          "202610260003_resumable_uploads.sql",
+          "202610260004_deletion_queue.sql",
+        ].map((name) => readFile(`supabase/migrations/${name}`, "utf8")),
+      )
+    ).join("\n"),
   );
   const owner = "00000000-0000-4000-8000-000000000001",
     other = "00000000-0000-4000-8000-000000000002",
@@ -168,6 +177,173 @@ test("PostgreSQL approval, roles, tenancy, budget and durable jobs", async () =>
   ]);
   assert.equal(r.rows[0].state, "confirming");
   await assert.rejects(command("retry", base), /retryable/);
+  // Versioned feedback revokes approval and cancels scheduled delivery.
+  await db.query(
+    "update social_jobs set state='failed' where state='confirming'",
+  );
+  await command("approve", { ...base, version: 2 });
+  await command("schedule", { ...base, scheduled_at: "2099-03-01" });
+  await command("request_changes", {
+    ...base,
+    version: 2,
+    message: "Correct the confirmed material",
+  });
+  assert.equal(
+    (
+      await db.query<{ approved_version: null }>(
+        "select approved_version from social_variants where id=$1",
+        [variant.id],
+      )
+    ).rows[0].approved_version,
+    null,
+  );
+  await assert.rejects(
+    command("review_comment", { ...base, version: 1, message: "stale" }),
+    /changed/,
+  );
+  await login(editor);
+  await assert.rejects(
+    command("request_changes", { ...base, version: 2, message: "No" }),
+    /Reviewer/,
+  );
+  await assert.rejects(
+    command("retention", { workspace_id: w, days: 30 }),
+    /Owner/,
+  );
+  await command("review_request", { ...base, version: 2, message: "Updated" });
+  await login(owner);
+  await command("retention", { workspace_id: w, days: 30 });
+  await assert.rejects(
+    command("retention", { workspace_id: w, days: 7 }),
+    /check constraint/,
+  );
+  await db.query("insert into social_enquiries(workspace_id,name,created_at) values($1,'old',now()-interval '31 days'),($1,'recent',now())",[w]);
+  await db.query("select social_maintenance()");
+  assert.equal((await db.query<{name:string}>("select name from social_enquiries")).rows[0].name,"recent");
+  assert.equal((await db.query("select * from social_enquiries")).rows.length,1);
+  // Upload manifests enforce exact chunks, identity, completion and immutable originals.
+  const p2 = await command("product", {
+    workspace_id: w,
+    brand_id: brand.id,
+    name: "Second",
+    facts: "Confirmed",
+  });
+  const upload = "20000000-0000-4000-8000-000000000001",
+    hash = "a".repeat(64);
+  const begin = () =>
+    db.query("select social_upload_begin($1::jsonb)", [
+      JSON.stringify({
+        id: upload,
+        product_id: p2.id,
+        checksum: hash,
+        bytes: 12,
+      }),
+    ]);
+  await begin();
+  await begin();
+  await assert.rejects(
+    db.query("select social_upload_part($1,$2,0,$3,13)", [upload, owner, hash]),
+    /Invalid part/,
+  );
+  await db.query("select social_upload_part($1,$2,0,$3,12)", [
+    upload,
+    owner,
+    hash,
+  ]);
+  await assert.rejects(
+    db.query("select social_upload_part($1,$2,0,$3,12)", [
+      upload,
+      owner,
+      "b".repeat(64),
+    ]),
+    /conflict/,
+  );
+  const path = `${w}/${p2.id}/${upload}.original`;
+  await assert.rejects(
+    db.query("select social_upload_complete($1,$2,$3,'image/png')", [
+      upload,
+      owner,
+      path,
+    ]),
+    /incomplete/,
+  );
+  await db.query(
+    "update social_upload_parts set uploaded=true where upload_id=$1",
+    [upload],
+  );
+  await db.query("select social_upload_complete($1,$2,$3,'image/png')", [
+    upload,
+    owner,
+    path,
+  ]);
+  await db.query("select social_upload_complete($1,$2,$3,'image/png')", [
+    upload,
+    owner,
+    path,
+  ]);
+  assert.equal(
+    (
+      await db.query<{ object_key: string }>(
+        "select object_key from social_products where id=$1",
+        [p2.id],
+      )
+    ).rows[0].object_key,
+    path,
+  );
+  await db.exec("set role authenticated");
+  for (const name of [
+    "social_command_v1",
+    "social_command_v2",
+    "social_command_v3",
+  ])
+    await assert.rejects(
+      db.query(`select ${name}('delete_workspace','{}')`),
+      /permission denied/,
+    );
+  await assert.rejects(
+    db.query("select social_maintenance()"),
+    /permission denied/,
+  );
+  await db.exec("reset role");
+  await assert.rejects(
+    command("delete_workspace", { workspace_id: w, confirm_name: "wrong" }),
+    /exactly/,
+  );
+  await command("delete_workspace", {
+    workspace_id: w,
+    confirm_name: "Boutique",
+  });
+  await assert.rejects(
+    command("review_comment", { ...base, version: 2, message: "hidden" }),
+    /access denied/,
+  );
+  await assert.rejects(
+    db.query("select social_purge_workspace($1)", [w]),
+    /quarantine/,
+  );
+  await db.exec("set role authenticated");
+  assert.equal(
+    (await db.query("select * from social_workspaces")).rows.length,
+    0,
+  );
+  await db.exec("reset role");
+  await db.query(
+    "update social_workspaces set deletion_requested_at=now()-interval '11 minutes' where id=$1",
+    [w],
+  );
+  await db.query("select social_maintenance()");
+  assert.equal(
+    (await db.query("select * from social_workspaces")).rows.length,
+    0,
+  );
+  assert.ok(
+    (
+      await db.query(
+        "select * from social_storage_cleanup where object_key=$1",
+        [path],
+      )
+    ).rows.length,
+  );
   await db.close();
 });
 
@@ -226,4 +402,17 @@ test("Request body limits apply without trusting Content-Length", async () => {
     duplex: "half",
   } as RequestInit);
   await assert.rejects(readBounded(req, 3), /too large/);
+});
+
+
+test("Calendar covers leap months and whole local weeks", async () => {
+  const {calendarDays,dayKey}=await import("../src/lib/social/calendar");
+  const month=calendarDays(new Date(2024,1,15),"month");
+  assert.equal(month.length,42);
+  assert.equal(month[0].getDay(),0);
+  assert.ok(month.some(day=>dayKey(day)==="2024-02-29"));
+  const week=calendarDays(new Date(2026,2,8),"week");
+  assert.equal(week.length,7);
+  assert.equal(new Set(week.map(dayKey)).size,7);
+  assert.equal(week[6].getDay(),6);
 });

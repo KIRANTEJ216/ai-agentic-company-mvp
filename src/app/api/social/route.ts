@@ -29,6 +29,7 @@ export async function GET(req: Request) {
       "enquiries",
       "notifications",
       "metrics",
+      "reviews",
     ];
     const rows = await Promise.all(
       names.map(async (name) => {
